@@ -1,7 +1,8 @@
 // Common types used across the application
+import type { ReactNode, ChangeEvent } from 'react'
 
 export interface ButtonProps {
-  children: React.ReactNode
+  children: ReactNode
   onClick?: () => void
   type?: 'button' | 'submit' | 'reset'
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost'
@@ -16,7 +17,7 @@ export interface InputProps {
   name: string
   type?: 'text' | 'email' | 'tel' | 'password' | 'number'
   value: string
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  onChange: (e: ChangeEvent<HTMLInputElement>) => void
   placeholder?: string
   label?: string
   error?: string
@@ -27,7 +28,7 @@ export interface InputProps {
 }
 
 export interface CardProps {
-  children: React.ReactNode
+  children: ReactNode
   className?: string
   title?: string
   description?: string
@@ -36,7 +37,7 @@ export interface CardProps {
 export interface ModalProps {
   isOpen: boolean
   onClose: () => void
-  children: React.ReactNode
+  children: ReactNode
   title?: string
   className?: string
 }
