@@ -1,0 +1,73 @@
+# CBot Website Project - Code Owners
+# Each line is a file pattern followed by one or more owners.
+# Owners will be automatically requested for review when someone opens a PR.
+
+# Default owner for everything
+* @team-lead
+
+# Source code - React Developer
+/src/ @react-developer
+/src/**/*.tsx @react-developer
+/src/**/*.ts @react-developer
+/src/**/*.jsx @react-developer
+/src/**/*.js @react-developer
+/src/**/*.css @react-developer
+
+# Tests - Tester
+/src/**/*.test.tsx @tester
+/src/**/*.test.ts @tester
+/tests/ @tester
+*.test.* @tester
+vitest.config.* @tester
+jest.config.* @tester
+
+# Infrastructure - DevOps Engineer
+Dockerfile @devops-engineer
+docker-compose.yml @devops-engineer
+nginx.conf @devops-engineer
+Makefile @devops-engineer
+.dockerignore @devops-engineer
+/k8s/ @devops-engineer
+
+# CI/CD - DevOps Engineer
+/.github/workflows/ @devops-engineer
+.gitlab-ci.yml @devops-engineer
+
+# GitHub Templates - GitHub Manager
+/.github/ISSUE_TEMPLATE/ @github-manager
+/.github/PULL_REQUEST_TEMPLATE.md @github-manager
+/.github/CODEOWNERS @github-manager
+/.github/COMMIT_CONVENTION.md @github-manager
+
+# Version Control - GitHub Manager
+.gitignore @github-manager
+.gitattributes @github-manager
+CHANGELOG.md @github-manager
+
+# Documentation - Docs Writer
+*.md @docs-writer
+/docs/ @docs-writer
+README.md @docs-writer
+CONTRIBUTING.md @docs-writer
+
+# Exception: Git and project management docs
+CHANGELOG.md @github-manager
+.github/COMMIT_CONVENTION.md @github-manager
+CLAUDE.md @team-lead
+
+# Configuration files - Multiple owners
+package.json @react-developer @devops-engineer
+package-lock.json @react-developer @devops-engineer
+tsconfig.json @react-developer
+vite.config.* @react-developer @tester
+tailwind.config.* @react-developer
+.eslintrc.* @react-developer @code-reviewer
+.prettierrc @react-developer @code-reviewer
+
+# Security-sensitive files - Security Auditor for review
+.env.example @security-auditor @devops-engineer
+**/security.* @security-auditor
+**/auth*.* @security-auditor
+
+# All PRs must be approved by Code Reviewer before merge
+* @code-reviewer
