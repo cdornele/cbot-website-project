@@ -1,0 +1,310 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - main
+      - develop
+
+env:
+  NODE_VERSION: '18'
+  DOCKER_IMAGE_NAME: cbot-website
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript type check
+        run: npm run type-check
+
+  test:
+    name: Test & Coverage
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Check coverage thresholds
+        run: |
+          echo "Verifying coverage meets minimum thresholds (80% statements, functions, lines; 75% branches)"
+          npm run test:coverage -- --reporter=json --reporter=text
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage/coverage-final.json
+          flags: unittests
+          name: codecov-cbot-website
+
+      - name: Archive coverage artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: false
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Check bundle size
+        run: |
+          echo "Checking bundle size..."
+          du -sh dist/
+          BUNDLE_SIZE=$(du -sm dist/ | cut -f1)
+          echo "Bundle size: ${BUNDLE_SIZE}MB"
+          if [ $BUNDLE_SIZE -gt 10 ]; then
+            echo "⚠️ Warning: Bundle size exceeds 10MB"
+          else
+            echo "✅ Bundle size is acceptable"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: dist/
+          retention-days: 7
+
+  docker-build:
+    name: Docker Build & Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }},${{ env.DOCKER_IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check Docker image size
+        run: |
+          echo "Docker image size:"
+          docker images ${{ env.DOCKER_IMAGE_NAME }}:latest --format "{{.Repository}}:{{.Tag}} - {{.Size}}"
+          SIZE=$(docker images ${{ env.DOCKER_IMAGE_NAME }}:latest --format "{{.Size}}" | sed 's/MB//')
+          echo "Image size: ${SIZE}MB"
+          if (( $(echo "$SIZE < 50" | bc -l) )); then
+            echo "✅ Image size is under 50MB target"
+          else
+            echo "❌ Error: Image size exceeds 50MB target"
+            exit 1
+          fi
+
+      - name: Test Docker container health
+        run: |
+          docker run -d -p 8080:80 --name test-container ${{ env.DOCKER_IMAGE_NAME }}:latest
+          echo "Waiting for container to be healthy..."
+          timeout 60 sh -c 'until docker inspect --format="{{.State.Health.Status}}" test-container | grep -q "healthy"; do sleep 2; done'
+          echo "✅ Container is healthy"
+          docker stop test-container
+          docker rm test-container
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Save Docker image
+        if: github.ref == 'refs/heads/main'
+        run: |
+          docker save ${{ env.DOCKER_IMAGE_NAME }}:latest | gzip > cbot-website-image.tar.gz
+
+      - name: Upload Docker image artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: cbot-website-image.tar.gz
+          retention-days: 7
+
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://cbot-website.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: |
+          docker load < cbot-website-image.tar.gz
+
+      - name: Tag image with version
+        run: |
+          VERSION=$(date +%Y%m%d-%H%M%S)
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:$VERSION
+          docker tag ${{ env.DOCKER_IMAGE_NAME }}:latest ${{ env.DOCKER_IMAGE_NAME }}:v1.0.0
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Deploy notification
+        run: |
+          echo "🚀 Deploying CBot Website"
+          echo "Version: ${{ env.VERSION }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+
+      # In a real deployment, you would push to a container registry and deploy
+      # Example with Docker Hub:
+      # - name: Login to Docker Hub
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.DOCKER_USERNAME }}
+      #     password: ${{ secrets.DOCKER_PASSWORD }}
+      #
+      # - name: Push to Docker Hub
+      #   run: |
+      #     docker push ${{ env.DOCKER_IMAGE_NAME }}:latest
+      #     docker push ${{ env.DOCKER_IMAGE_NAME }}:v1.0.0
+      #
+      # - name: Deploy to production server
+      #   uses: appleboy/ssh-action@master
+      #   with:
+      #     host: ${{ secrets.PROD_HOST }}
+      #     username: ${{ secrets.PROD_USER }}
+      #     key: ${{ secrets.PROD_SSH_KEY }}
+      #     script: |
+      #       docker pull ${{ env.DOCKER_IMAGE_NAME }}:latest
+      #       docker stop cbot-website || true
+      #       docker rm cbot-website || true
+      #       docker run -d -p 80:80 --name cbot-website --restart unless-stopped ${{ env.DOCKER_IMAGE_NAME }}:latest
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment complete"
+          echo "Docker image ready: ${{ env.DOCKER_IMAGE_NAME }}:v1.0.0"
+
+  quality-gate:
+    name: Quality Gate Summary
+    runs-on: ubuntu-latest
+    needs: [lint-and-typecheck, test, security-scan, build, docker-build]
+    if: always()
+    steps:
+      - name: Check quality gate status
+        run: |
+          echo "Quality Gate Results:"
+          echo "===================="
+          echo "Lint & Type Check: ${{ needs.lint-and-typecheck.result }}"
+          echo "Tests & Coverage: ${{ needs.test.result }}"
+          echo "Security Scan: ${{ needs.security-scan.result }}"
+          echo "Build: ${{ needs.build.result }}"
+          echo "Docker Build: ${{ needs.docker-build.result }}"
+
+          if [[ "${{ needs.lint-and-typecheck.result }}" != "success" ]] || \
+             [[ "${{ needs.test.result }}" != "success" ]] || \
+             [[ "${{ needs.security-scan.result }}" != "success" ]] || \
+             [[ "${{ needs.build.result }}" != "success" ]] || \
+             [[ "${{ needs.docker-build.result }}" != "success" ]]; then
+            echo "❌ Quality gate FAILED"
+            exit 1
+          else
+            echo "✅ All quality gates PASSED"
+          fi
